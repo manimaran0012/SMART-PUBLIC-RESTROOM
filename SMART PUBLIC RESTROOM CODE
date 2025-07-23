@@ -1,0 +1,148 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <DHT.h>
+#include <AccelStepper.h>
+#include <NewPing.h>
+#include <LiquidCrystal_I2C.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+
+#define DHT_PIN 15     // GPIO connected to DHT22
+#define DHT_TYPE DHT22
+#define ULTRASONIC_TRIGGER 4 // GPIO connected to ultrasonic sensor trigger
+#define ULTRASONIC_ECHO 5    // GPIO connected to ultrasonic sensor echo
+#define MOTOR1_STEP 18
+#define MOTOR1_DIR 16
+#define MOTOR1_ENABLE 1
+#define MOTOR2_STEP 17
+#define MOTOR2_DIR 16
+#define MOTOR2_ENABLE 2
+#define IR_SENSOR_PIN 13    // GPIO connected to IR sensor
+#define CAPACITIVE_SENSOR_PIN 14 // GPIO connected to the capacitive sensor
+#define LCD_ADDRESS 39    // I2C address of the LCD
+#define LCD_COLS 20
+#define LCD_ROWS 6
+
+DHT dht(DHT_PIN, DHT_TYPE);
+AccelStepper stepper1(10000, MOTOR1_STEP, MOTOR1_DIR);
+AccelStepper stepper2(1, MOTOR2_STEP, MOTOR2_DIR);
+NewPing sonar(ULTRASONIC_TRIGGER, ULTRASONIC_ECHO);
+LiquidCrystal_I2C lcd(LCD_ADDRESS, LCD_COLS, LCD_ROWS);
+
+int count = 0;
+int waterLeakage = 0; // Initialize the water leakage variable
+
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
+const char* thingSpeakUrl = "https://api.thingspeak.com/update";
+const String apiKey = "F9IE7GGUTH545VG5"; // Replace with your ThingSpeak API Key
+
+void setup() {
+  Serial.begin(9600);
+  Serial.print("Connecting to WiFi");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(100);
+    Serial.print(".");
+  }
+  Serial.println(" Connected!");
+
+  Serial.begin(115200);
+  lcd.init();
+  lcd.backlight();
+  dht.begin();
+  pinMode(MOTOR1_ENABLE, OUTPUT);
+  pinMode(MOTOR2_ENABLE, OUTPUT);
+  pinMode(IR_SENSOR_PIN, INPUT); // IR sensor as input
+  pinMode(CAPACITIVE_SENSOR_PIN, INPUT); // Capacitive sensor as input
+  digitalWrite(MOTOR1_ENABLE, LOW);
+  digitalWrite(MOTOR2_ENABLE, LOW);
+  stepper1.setMaxSpeed(10000);
+  stepper1.setSpeed(2000);
+  stepper2.setMaxSpeed(1000);
+  stepper2.setSpeed(200);
+}
+
+void loop() {
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
+
+  unsigned int cm = sonar.ping_cm();
+
+  if (cm < 170) {
+    // Rotate motor 1 clockwise by a certain number of steps
+    digitalWrite(MOTOR1_ENABLE, HIGH);  // Enable the motor
+    digitalWrite(MOTOR1_DIR, HIGH);     // Set direction
+    for (int i = 0; i <= 170; i++) {
+      digitalWrite(MOTOR1_STEP, HIGH);
+      delayMicroseconds(50);
+      digitalWrite(MOTOR1_STEP, LOW);
+      delayMicroseconds(50);
+    }
+    digitalWrite(MOTOR1_ENABLE, LOW);  // Disable the motor
+  } else {
+    digitalWrite(MOTOR1_ENABLE, LOW);  // Disable the motor
+  }
+
+  if (temperature > 25.0) {
+    // Rotate motor 2 clockwise by a certain number of steps
+    digitalWrite(MOTOR2_ENABLE, HIGH);  // Enable the motor
+    digitalWrite(MOTOR2_DIR, HIGH);     // Set direction
+    for (int i = 0; i < 200; i++) {
+      digitalWrite(MOTOR2_STEP, HIGH);
+      delayMicroseconds(50);
+      digitalWrite(MOTOR2_STEP, LOW);
+      delayMicroseconds(50);
+    }
+    digitalWrite(MOTOR2_ENABLE, LOW);  // Disable the motor
+  } else {
+    digitalWrite(MOTOR2_ENABLE, LOW);  // Disable the motor
+  }
+
+  // IR sensor count detection
+  if (digitalRead(IR_SENSOR_PIN) == HIGH) {
+    // Increment the count when IR sensor detects an object
+    count++;
+  }
+
+  // Read the capacitive sensor value
+  waterLeakage = digitalRead(CAPACITIVE_SENSOR_PIN);
+
+  // Create a query string with all the data you want to send
+  String queryString = "api_key=" + apiKey +
+                      "&field1=" + String(temperature) +
+                      "&field2=" + String(humidity) +
+                      "&field3=" + String(count) +
+                      "&field4=" + String(waterLeakage) +
+                      "&field5=" + String(cm); // Add ultrasonic distance as field5
+
+  // Send the data to ThingSpeak
+  HTTPClient http;
+  http.begin(thingSpeakUrl);
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  int httpResponseCode = http.POST(queryString);
+
+  if (httpResponseCode == 200) {
+    Serial.println("Data sent to ThingSpeak successfully");
+  } else {
+    Serial.println("Failed to send data to ThingSpeak");
+  }
+
+  http.end();
+
+  // Delay before the next iteration
+  delay(1000);
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Temp: " + String(temperature) + "C");
+  lcd.setCursor(0, 1);
+  lcd.print("Humidity: " + String(humidity) + "%");
+  lcd.setCursor(0, 2);
+  lcd.print("Count: " + String(count));
+  lcd.setCursor(0, 3);
+  lcd.print("Leakage: " + String(waterLeakage));
+  lcd.setCursor(0, 4);
+  lcd.print("Dis: " + String(cm) + "cm"); // Display ultrasonic distance
+  delay(1000);
+}
